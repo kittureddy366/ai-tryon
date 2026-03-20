@@ -98,6 +98,7 @@ class RealtimeMeshRenderer:
                 frame_bgr.shape, anchor_targets, cloth_color_bgra, cloth_texture_rgba=cloth_texture_rgba
             )
 
+        overlay = self._apply_depth_shading(overlay, cloth_vertices)
         alpha = overlay[:, :, 3:4].astype(np.float32) / 255.0
         overlay = self._match_scene_lighting(overlay, frame_bgr, cloth_vertices)
         alpha = overlay[:, :, 3:4].astype(np.float32) / 255.0
@@ -111,6 +112,49 @@ class RealtimeMeshRenderer:
             arm_mask = self._foreground_arm_mask(frame_bgr.shape, pose_points)
             composed[arm_mask > 0] = frame_bgr[arm_mask > 0]
         return composed
+
+    @staticmethod
+    def _apply_depth_shading(overlay_bgra, cloth_vertices):
+        if overlay_bgra is None or cloth_vertices is None:
+            return overlay_bgra
+        alpha = overlay_bgra[:, :, 3]
+        if int(np.count_nonzero(alpha > 20)) < 1000:
+            return overlay_bgra
+
+        h, w = overlay_bgra.shape[:2]
+        pts = np.round(cloth_vertices[:, :2]).astype(np.int32)
+        xs = np.clip(pts[:, 0], 0, w - 1)
+        ys = np.clip(pts[:, 1], 0, h - 1)
+
+        z = cloth_vertices[:, 2].astype(np.float32)
+        if not np.isfinite(z).all():
+            return overlay_bgra
+        z0 = float(np.percentile(z, 10.0))
+        z1 = float(np.percentile(z, 90.0))
+        span = max(z1 - z0, 1e-6)
+        zn = np.clip((z - z0) / span, 0.0, 1.0)
+
+        depth = np.zeros((h, w), dtype=np.float32)
+        # Scatter vertex depth then dilate/blur to obtain a smooth fold-like shading field.
+        for x, y, v in zip(xs.tolist(), ys.tolist(), zn.tolist()):
+            if v > depth[y, x]:
+                depth[y, x] = v
+        depth = cv2.dilate(depth, np.ones((9, 9), np.uint8), iterations=2)
+        depth = cv2.GaussianBlur(depth, (0, 0), 7.0)
+
+        mask = (alpha > 20).astype(np.float32)
+        if float(np.max(mask)) <= 0:
+            return overlay_bgra
+
+        # Map depth to gentle shading to emphasize drape/folds without looking metallic.
+        shade = 0.88 + 0.24 * (depth - 0.5) * 2.0
+        shade = np.clip(shade, 0.78, 1.18).astype(np.float32)
+        shade = (shade * mask + (1.0 - mask)).astype(np.float32)
+
+        out = overlay_bgra.copy().astype(np.float32)
+        out[:, :, :3] *= shade[:, :, None]
+        out[:, :, :3] = np.clip(out[:, :, :3], 0, 255)
+        return out.astype(np.uint8)
 
     @staticmethod
     def _has_sufficient_coverage(alpha, min_pixels, min_bbox_area):
@@ -502,6 +546,16 @@ class RealtimeMeshRenderer:
         yy = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
         vignette = 0.96 + 0.08 * (1.0 - np.abs(yy - 0.45) * 1.8)
         color *= vignette[:, :, None]
+
+        # Borrow scene shading from the underlying frame so the garment inherits lighting/shadows.
+        fy = frame_y.copy()
+        lo = float(np.percentile(fy[mask], 5.0))
+        hi = float(np.percentile(fy[mask], 95.0))
+        span = max(hi - lo, 1e-6)
+        fy_n = np.clip((fy - lo) / span, 0.0, 1.0)
+        scene_shade = 0.78 + 0.44 * fy_n  # 0.78..1.22
+        scene_shade = np.clip(scene_shade, 0.75, 1.18)
+        color *= scene_shade[:, :, None]
 
         ov_roi[:, :, :3] = np.clip(color, 0, 255).astype(np.uint8)
         overlay[y0:y1, x0:x1] = ov_roi

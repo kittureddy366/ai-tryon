@@ -213,7 +213,9 @@ def _clean_and_simplify_mesh(vertices, faces, uvs, max_faces=2200):
             return vv, ff, tt
 
     # Final fallback: if still too dense, take a spatially-uniform subset of faces.
-    return _spatial_face_sample(v, f, t, max_faces=max_faces)
+    vv, ff, tt = _spatial_face_sample(v, f, t, max_faces=max_faces)
+    vv, ff, tt = _keep_largest_component(vv, ff, tt)
+    return vv, ff, tt
 
 
 def _weld_vertices(vertices, faces, uvs, tol=0.004):

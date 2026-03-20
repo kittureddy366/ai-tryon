@@ -282,7 +282,7 @@ def main():
     parser.add_argument("--triposr-force", action="store_true", help="Force regenerate TripoSR OBJ (ignore cache).")
     parser.add_argument("--sim-steps", type=int, default=14, help="Cloth sim steps per frame (higher = more drape, slower).")
     parser.add_argument("--no-refine", action="store_true", help="Disable output refinement.")
-    parser.add_argument("--texture-mode", default="mesh", choices=("mesh", "quad"), help="How to apply garment texture.")
+    parser.add_argument("--texture-mode", default="quad", choices=("mesh", "quad"), help="How to apply garment texture.")
     parser.add_argument("--max-frames", type=int, default=0, help="For videos: stop after N frames (0 = all).")
     args = parser.parse_args()
 

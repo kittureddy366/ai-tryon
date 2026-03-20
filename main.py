@@ -253,6 +253,8 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
             fps_smooth = inst_fps if fps_smooth <= 0 else (fps_smooth * 0.7 + inst_fps * 0.3)
             last_fps_at = now
             frames_since_fps = 0
+            if fps_smooth and fps_smooth < 8.0 and texture_mode == "mesh":
+                texture_mode = "quad"
         triposr_state = triposr_gen.snapshot() if triposr_gen is not None else {"status": "idle"}
 
         if triposr_state["status"] == "ready" and not triposr_applied:
