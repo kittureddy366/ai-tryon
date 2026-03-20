@@ -47,3 +47,11 @@ The headless runner can generate a garment OBJ from a 2D garment image using Tri
 - `python scripts/headless_tryon.py --input TripoSR/examples/police_woman.png --output generated/out_triposr.png --triposr require --triposr-image png-clipart-t-shirt-polo-shirt-clothing-sleeve-black-t-shirt-black-crew-neck-t-shirt-tshirt-fashion-thumbnail.png`
 
 If TripoSR is not available on your machine, use `--triposr off` to force the fallback cloth grid.
+
+### TripoSR weights
+
+TripoSR needs pretrained weights (`model.ckpt`, ~1.6GB). They are not committed to git.
+
+Download them into the expected local cache folder:
+
+- `python scripts/download_triposr_weights.py`
