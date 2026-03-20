@@ -1,41 +1,63 @@
+import os
+from pathlib import Path
+
 import cv2
-from pose.body_pose import BodyPoseDetector
 import mediapipe as mp
+import numpy as np
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
-cap = cv2.VideoCapture(0)
 
-pose_detector = BodyPoseDetector()
+class BodyPoseDetector:
+    def __init__(
+        self,
+        model_asset_path: str | None = None,
+        running_mode: str = "video",
+        output_segmentation_masks: bool = False,
+    ):
+        if not model_asset_path:
+            model_asset_path = os.environ.get("POSE_LANDMARKER_MODEL", "")
+        if not model_asset_path:
+            repo_root = Path(__file__).resolve().parents[1]
+            model_asset_path = str(repo_root / "pose_landmarker_lite.task")
 
-mp_drawing = mp.solutions.drawing_utils
-mp_pose = mp.solutions.pose
+        running_mode = (running_mode or "video").strip().lower()
+        if running_mode not in {"video", "image"}:
+            raise ValueError("running_mode must be 'video' or 'image'")
+        self.running_mode = running_mode
 
-timestamp = 0
+        base_options = python.BaseOptions(model_asset_path=model_asset_path)
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.VIDEO if self.running_mode == "video" else vision.RunningMode.IMAGE,
+            output_segmentation_masks=bool(output_segmentation_masks),
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        self.detector = vision.PoseLandmarker.create_from_options(options)
 
-while True:
-    ret, frame = cap.read()
+    def detect_pose(self, frame, timestamp=None):
+        if frame is None:
+            raise ValueError("frame is None")
 
-    if not ret:
-        break
+        if frame.ndim == 2:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+        elif frame.shape[2] == 4:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
+        else:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    timestamp += 1
+        if rgb.dtype != np.uint8:
+            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+        rgb = np.ascontiguousarray(rgb)
 
-    result = pose_detector.detect_pose(frame, timestamp)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-    if result.pose_landmarks:
+        if self.running_mode == "image":
+            return self.detector.detect(mp_image)
 
-        for pose_landmarks in result.pose_landmarks:
+        if timestamp is None:
+            timestamp = 0
+        return self.detector.detect_for_video(mp_image, int(timestamp))
 
-            mp_drawing.draw_landmarks(
-                frame,
-                pose_landmarks,
-                mp_pose.POSE_CONNECTIONS
-            )
-
-    cv2.imshow("Pose Detection", frame)
-
-    # PRESS Q TO EXIT
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-cap.release()
-cv2.destroyAllWindows(),
