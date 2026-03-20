@@ -1,0 +1,1 @@
+.cache/triposr_hf/stabilityai__TripoSR/model.ckpt filter=lfs diff=lfs merge=lfs -text

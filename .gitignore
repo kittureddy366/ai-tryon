@@ -1,4 +1,7 @@
-.cache/
+.cache/*
+!.cache/triposr_hf/
+!.cache/triposr_hf/stabilityai__TripoSR/
+!.cache/triposr_hf/stabilityai__TripoSR/model.ckpt
 **/__pycache__/
 *.py[cod]
 *.pyd
