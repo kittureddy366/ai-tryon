@@ -34,6 +34,8 @@ In the preview window:
 - `r`: toggle refinement
 - `space`: pause/resume (useful for analysis)
 - `c`: capture a screenshot to `generated/captures/`
+- `t`: toggle texture on/off
+- `m`: toggle texture mapping mode (`quad` vs `mesh`)
 
 ## Run (offline image/video)
 

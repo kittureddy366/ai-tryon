@@ -216,6 +216,7 @@ def run_on_frame(
     timestamp_ms: int | None,
     sim_steps: int,
     initialize_cloth: bool,
+    texture_mode: str,
 ):
     result = pose_detector.detect_pose(frame_bgr, timestamp_ms)
     points = extract_pose_landmarks(result, frame_bgr.shape)
@@ -250,6 +251,7 @@ def run_on_frame(
         pose_points=points,
         anchor_targets=anchors,
         person_mask=person_mask,
+        texture_mode=texture_mode,
     )
 
     if refiner is not None:
@@ -280,6 +282,7 @@ def main():
     parser.add_argument("--triposr-force", action="store_true", help="Force regenerate TripoSR OBJ (ignore cache).")
     parser.add_argument("--sim-steps", type=int, default=14, help="Cloth sim steps per frame (higher = more drape, slower).")
     parser.add_argument("--no-refine", action="store_true", help="Disable output refinement.")
+    parser.add_argument("--texture-mode", default="mesh", choices=("mesh", "quad"), help="How to apply garment texture.")
     parser.add_argument("--max-frames", type=int, default=0, help="For videos: stop after N frames (0 = all).")
     args = parser.parse_args()
 
@@ -312,7 +315,7 @@ def main():
         else:
             snap = _run_triposr_blocking(project_root, triposr_input, force=bool(args.triposr_force))
             if snap.get("status") == "ready" and snap.get("obj_path"):
-                mesh = load_obj_garment_mesh(snap["obj_path"])
+                mesh = load_obj_garment_mesh(snap["obj_path"], max_faces=6500)
                 if mesh is not None:
                     planar_uvs = planar_uvs_from_vertices(mesh.get("vertices"))
                     if planar_uvs is not None:
@@ -371,6 +374,7 @@ def main():
                     timestamp_ms=timestamp_ms,
                     sim_steps=args.sim_steps,
                     initialize_cloth=not cloth_initialized,
+                    texture_mode=args.texture_mode,
                 )
                 cloth_initialized = True
             except RuntimeError as exc:
@@ -417,6 +421,7 @@ def main():
         timestamp_ms=None,
         sim_steps=args.sim_steps,
         initialize_cloth=True,
+        texture_mode=args.texture_mode,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

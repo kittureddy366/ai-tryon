@@ -3,7 +3,7 @@ import os
 import numpy as np
 
 
-def load_obj_garment_mesh(path, max_faces=2200):
+def load_obj_garment_mesh(path, max_faces=2200, clean=True):
     if not path or not os.path.exists(path):
         return None
 
@@ -72,8 +72,6 @@ def load_obj_garment_mesh(path, max_faces=2200):
     if faces.size == 0 or verts.size == 0:
         return None
 
-    verts, faces, uvs = _simplify_mesh(verts, faces, uvs, max_faces=max_faces)
-
     # Normalize OBJ into cloth local space.
     x = verts[:, 0]
     y = verts[:, 1]
@@ -101,6 +99,9 @@ def load_obj_garment_mesh(path, max_faces=2200):
         uu = (xn + 1.0) * 0.5
         vv = np.clip(yn01, 0.0, 1.0)
         uvs = np.column_stack([uu, vv]).astype(np.float32)
+
+    if clean:
+        out, faces, uvs = _clean_and_simplify_mesh(out, faces, uvs, max_faces=max_faces)
 
     anchors = _estimate_anchors(out)
     return {
@@ -195,3 +196,150 @@ def _estimate_anchors(vertices):
         "left_hip": pick(-0.34, -0.55),
         "right_hip": pick(0.34, -0.55),
     }
+
+
+def _clean_and_simplify_mesh(vertices, faces, uvs, max_faces=2200):
+    v, f, t = _weld_vertices(vertices, faces, uvs, tol=0.004)
+    v, f, t = _keep_largest_component(v, f, t)
+    if int(f.shape[0]) <= int(max_faces):
+        return v, f, t
+
+    # Connectivity-preserving simplification: iterative vertex clustering in cloth-local space.
+    # This avoids "random triangle shards" caused by face-stride sampling on dense meshes.
+    for tol in (0.006, 0.010, 0.016, 0.024, 0.032, 0.045):
+        vv, ff, tt = _weld_vertices(v, f, t, tol=float(tol))
+        vv, ff, tt = _keep_largest_component(vv, ff, tt)
+        if int(ff.shape[0]) <= int(max_faces):
+            return vv, ff, tt
+
+    # Final fallback: if still too dense, take a spatially-uniform subset of faces.
+    return _spatial_face_sample(v, f, t, max_faces=max_faces)
+
+
+def _weld_vertices(vertices, faces, uvs, tol=0.004):
+    if vertices is None or faces is None or vertices.size == 0 or faces.size == 0:
+        return vertices, faces, uvs
+
+    tol = float(max(tol, 1e-6))
+    v = vertices.astype(np.float32)
+    q = np.round(v / tol).astype(np.int32)
+
+    key_to_new = {}
+    new_index = np.empty((v.shape[0],), dtype=np.int32)
+    sums = []
+    counts = []
+    uv_sums = [] if uvs is not None and uvs.size else None
+
+    for i in range(v.shape[0]):
+        key = (int(q[i, 0]), int(q[i, 1]), int(q[i, 2]))
+        idx = key_to_new.get(key)
+        if idx is None:
+            idx = len(sums)
+            key_to_new[key] = idx
+            sums.append(v[i].copy())
+            counts.append(1)
+            if uv_sums is not None:
+                uv_sums.append(uvs[i].astype(np.float32).copy())
+        else:
+            sums[idx] += v[i]
+            counts[idx] += 1
+            if uv_sums is not None:
+                uv_sums[idx] += uvs[i].astype(np.float32)
+        new_index[i] = idx
+
+    new_v = (np.stack(sums, axis=0) / np.array(counts, dtype=np.float32)[:, None]).astype(np.float32)
+    new_uv = None
+    if uv_sums is not None:
+        new_uv = (np.stack(uv_sums, axis=0) / np.array(counts, dtype=np.float32)[:, None]).astype(np.float32)
+
+    new_f = new_index[faces.reshape(-1)].reshape(faces.shape).astype(np.int32)
+    a = new_f[:, 0]
+    b = new_f[:, 1]
+    c = new_f[:, 2]
+    keep = (a != b) & (b != c) & (a != c)
+    new_f = new_f[keep]
+    if new_f.size == 0:
+        return new_v, new_f, new_uv if new_uv is not None else uvs
+
+    used = np.unique(new_f.reshape(-1))
+    remap = np.full((new_v.shape[0],), -1, dtype=np.int32)
+    remap[used] = np.arange(used.shape[0], dtype=np.int32)
+    compact_f = remap[new_f]
+    compact_v = new_v[used]
+    compact_uv = (new_uv[used] if new_uv is not None else (uvs[used] if uvs is not None and uvs.size else uvs))
+    return compact_v, compact_f.astype(np.int32), compact_uv
+
+
+def _keep_largest_component(vertices, faces, uvs):
+    if vertices is None or faces is None or vertices.size == 0 or faces.size == 0:
+        return vertices, faces, uvs
+
+    n = int(vertices.shape[0])
+    adj = [[] for _ in range(n)]
+    for tri in faces:
+        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+        adj[a].append(b)
+        adj[a].append(c)
+        adj[b].append(a)
+        adj[b].append(c)
+        adj[c].append(a)
+        adj[c].append(b)
+
+    label = np.full((n,), -1, dtype=np.int32)
+    comp_sizes = []
+    comp_id = 0
+    for i in range(n):
+        if label[i] != -1:
+            continue
+        stack = [i]
+        label[i] = comp_id
+        size = 0
+        while stack:
+            u = stack.pop()
+            size += 1
+            for v in adj[u]:
+                if label[v] == -1:
+                    label[v] = comp_id
+                    stack.append(v)
+        comp_sizes.append(size)
+        comp_id += 1
+
+    if not comp_sizes:
+        return vertices, faces, uvs
+    largest = int(np.argmax(np.array(comp_sizes, dtype=np.int32)))
+    keep_v_mask = label == largest
+
+    keep_faces = keep_v_mask[faces[:, 0]] & keep_v_mask[faces[:, 1]] & keep_v_mask[faces[:, 2]]
+    kept_faces = faces[keep_faces]
+    if kept_faces.size == 0:
+        return vertices, faces, uvs
+
+    used = np.unique(kept_faces.reshape(-1))
+    remap = np.full((n,), -1, dtype=np.int32)
+    remap[used] = np.arange(used.shape[0], dtype=np.int32)
+    new_faces = remap[kept_faces].astype(np.int32)
+    new_vertices = vertices[used].astype(np.float32)
+    new_uvs = (uvs[used].astype(np.float32) if uvs is not None and getattr(uvs, "size", 0) else uvs)
+    return new_vertices, new_faces, new_uvs
+
+
+def _spatial_face_sample(vertices, faces, uvs, max_faces=2200):
+    face_count = int(faces.shape[0])
+    if face_count <= int(max_faces):
+        return vertices, faces, uvs
+
+    tri = vertices[faces]
+    cent = np.mean(tri[:, :, :2], axis=1)  # Nx2
+    # Scanline ordering: mostly preserves local continuity.
+    order = np.lexsort((cent[:, 0], cent[:, 1]))
+    step = max(1, int(np.ceil(face_count / float(max_faces))))
+    keep = order[::step][: int(max_faces)]
+    sampled_faces = faces[keep].astype(np.int32)
+
+    used = np.unique(sampled_faces.reshape(-1))
+    remap = np.full((vertices.shape[0],), -1, dtype=np.int32)
+    remap[used] = np.arange(used.shape[0], dtype=np.int32)
+    compact_faces = remap[sampled_faces].astype(np.int32)
+    compact_vertices = vertices[used].astype(np.float32)
+    compact_uvs = (uvs[used].astype(np.float32) if uvs is not None and getattr(uvs, "size", 0) else uvs)
+    return compact_vertices, compact_faces, compact_uvs

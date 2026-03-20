@@ -57,15 +57,34 @@ class RealtimeMeshRenderer:
         pose_points=None,
         anchor_targets=None,
         person_mask=None,
+        texture_mode="mesh",
     ):
         h, w = frame_bgr.shape[:2]
         if self.frame_w is None:
             self._init_gl(w, h)
 
+        texture_mode = (texture_mode or "mesh").strip().lower()
+        if texture_mode not in {"mesh", "quad"}:
+            texture_mode = "mesh"
+
         if self.use_opengl:
             overlay = self._render_opengl(w, h, cloth_vertices, cloth_faces, cloth_color_bgra)
         else:
-            if cloth_texture_rgba is not None and cloth_uvs is not None:
+            if (
+                texture_mode == "quad"
+                and cloth_texture_rgba is not None
+                and anchor_targets is not None
+                and cloth_texture_rgba.size > 0
+            ):
+                tex_overlay = self._fallback_anchor_overlay(
+                    frame_bgr.shape, anchor_targets, cloth_color_bgra, cloth_texture_rgba=cloth_texture_rgba
+                )
+                # Use the simulated cloth mesh silhouette (alpha) so the result looks like one garment,
+                # while still mapping the 2D texture as a single piece.
+                mesh_overlay = self._render_software(w, h, cloth_vertices, cloth_faces, cloth_color_bgra)
+                overlay = tex_overlay
+                overlay[:, :, 3] = np.clip(mesh_overlay[:, :, 3].astype(np.int32), 0, 255).astype(np.uint8)
+            elif cloth_texture_rgba is not None and cloth_uvs is not None:
                 overlay = self._render_software_textured(
                     w, h, cloth_vertices, cloth_faces, cloth_uvs, cloth_texture_rgba, cloth_color_bgra
                 )

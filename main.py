@@ -234,6 +234,7 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
     paused = False
     screenshot_idx = 0
     texture_enabled = True
+    texture_mode = "quad"
 
     while True:
         # Low-latency capture: drop buffered frames when CPU can't keep up.
@@ -258,7 +259,7 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
             preset = get_preset(current_key).copy()
             preset["generated_obj_path"] = triposr_state["obj_path"]
             active_preset = preset
-            mesh = load_obj_garment_mesh(triposr_state["obj_path"])
+            mesh = load_obj_garment_mesh(triposr_state["obj_path"], max_faces=6500)
             if mesh is not None:
                 # TripoSR UVs are not guaranteed to align with the 2D garment image.
                 # Use a stable planar UV projection so the 2D texture maps sensibly.
@@ -418,6 +419,7 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
                     pose_points=points,
                     anchor_targets=anchor_targets,
                     person_mask=person_mask,
+                    texture_mode=texture_mode,
                 )
             except (cv2.error, MemoryError, ValueError):
                 # When tracking glitches or the cloth sim explodes, reset and keep the camera loop alive.
@@ -476,7 +478,7 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
             )
             cv2.putText(
                 output,
-                "Space: pause  C: capture  R: refine  T: texture  S: skip TripoSR wait",
+                "Space: pause  C: capture  R: refine  T: texture  M: mode  S: skip TripoSR wait",
                 (14, 156),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.42,
@@ -489,7 +491,7 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
                 (
                     f"Refine: {'on' if refine_enabled else 'off'}"
                     f"{(' (' + refiner.mode + ')') if (refiner is not None and refine_enabled) else ''}"
-                    f"  Texture: {'on' if texture_enabled else 'off'}"
+                    f"  Texture: {('off' if (not texture_enabled) else texture_mode)}"
                 ),
                 (14, 106),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -560,6 +562,8 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
                 refiner = OutputRefiner(project_root=project_root, enable_esrgan=bool(esrgan))
         if key == ord("t"):
             texture_enabled = not texture_enabled
+        if key == ord("m"):
+            texture_mode = "mesh" if texture_mode == "quad" else "quad"
         if key == ord(" "):
             paused = True
         if key == ord("c"):
