@@ -188,7 +188,7 @@ def _format_triposr_status(snapshot):
     return "TripoSR: idle", (180, 180, 180)
 
 
-def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0):
+def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, camera_index=0):
     project_root = os.path.dirname(os.path.abspath(__file__))
     cap = cv2.VideoCapture(int(camera_index))
     if not cap.isOpened():
@@ -218,18 +218,26 @@ def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0)
     active_preset, cloth_mesh, cloth_sim, cloth_texture = _create_garment_runtime(project_root, current_key)
     triposr_applied = False
     renderer = RealtimeMeshRenderer()
-    refiner = OutputRefiner(project_root=project_root) if refine else None
+    refiner = OutputRefiner(project_root=project_root, enable_esrgan=bool(esrgan)) if refine else None
     refine_enabled = bool(refine)
     smoother_state = initialize_landmark_smoother()
 
     cloth_initialized = False
     last_t = time.time()
+    last_fps_at = last_t
+    frames_since_fps = 0
+    fps_smooth = 0.0
     frame_idx = 0
     last_points = None
     last_result = None
     anchor_state = {"anchors": None}
+    paused = False
+    screenshot_idx = 0
 
     while True:
+        # Low-latency capture: drop buffered frames when CPU can't keep up.
+        for _ in range(2):
+            cap.grab()
         ok, frame = cap.read()
         if not ok:
             break
@@ -237,6 +245,12 @@ def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0)
         now = time.time()
         dt = max(1.0 / 120.0, now - last_t)
         last_t = now
+        frames_since_fps += 1
+        if now - last_fps_at >= 0.5:
+            inst_fps = frames_since_fps / max(now - last_fps_at, 1e-6)
+            fps_smooth = inst_fps if fps_smooth <= 0 else (fps_smooth * 0.7 + inst_fps * 0.3)
+            last_fps_at = now
+            frames_since_fps = 0
         triposr_state = triposr_gen.snapshot() if triposr_gen is not None else {"status": "idle"}
 
         if triposr_state["status"] == "ready" and not triposr_applied:
@@ -303,10 +317,17 @@ def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0)
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q") or key == 27:
                 break
+            if key == ord("s"):
+                triposr_mode = "auto"
             continue
 
         # Run pose every other frame for smoother overall realtime throughput.
-        pose_stride = 3 if triposr_state["status"] == "running" else 2
+        pose_stride = 4 if triposr_state["status"] == "running" else 2
+        # Adaptive: when FPS drops, increase stride to keep UI responsive.
+        if fps_smooth and fps_smooth < 12.0:
+            pose_stride = max(pose_stride, 4)
+        elif fps_smooth and fps_smooth < 18.0:
+            pose_stride = max(pose_stride, 3)
         if frame_idx % pose_stride == 0 or last_points is None:
             result = pose_detector.detect_pose(frame, int(now * 1000))
             points = extract_pose_landmarks(result, frame.shape, smoother_state=smoother_state)
@@ -318,6 +339,30 @@ def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0)
         frame_idx += 1
 
         output = frame
+        if paused:
+            cv2.putText(
+                output,
+                "PAUSED (space to resume, C to capture)",
+                (14, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.62,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.imshow("Real-time 3D Virtual Try-On", output)
+            key = cv2.waitKey(30) & 0xFF
+            if key == ord(" ") or key == ord("p"):
+                paused = False
+            elif key == ord("c"):
+                os.makedirs(os.path.join(project_root, "generated", "captures"), exist_ok=True)
+                out_path = os.path.join(project_root, "generated", "captures", f"capture_{screenshot_idx:04d}.png")
+                screenshot_idx += 1
+                cv2.imwrite(out_path, output)
+                print(f"Saved capture: {out_path}")
+            elif key == ord("q") or key == 27:
+                break
+            continue
         if points is not None:
             body_mesh = body_model.generate(result, frame.shape)
             if body_mesh is None:
@@ -425,6 +470,16 @@ def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0)
             )
             cv2.putText(
                 output,
+                "Space: pause  C: capture  R: refine  S: skip TripoSR wait",
+                (14, 156),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                (200, 200, 200),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                output,
                 f"Refine: {'on' if refine_enabled else 'off'}{(' (' + refiner.mode + ')') if (refiner is not None and refine_enabled) else ''}",
                 (14, 106),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -473,6 +528,18 @@ def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0)
                 cv2.LINE_AA,
             )
 
+        if fps_smooth:
+            cv2.putText(
+                output,
+                f"{fps_smooth:4.1f} fps",
+                (output.shape[1] - 120, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.62,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
         cv2.imshow("Real-time 3D Virtual Try-On", output)
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q") or key == 27:
@@ -480,7 +547,15 @@ def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0)
         if key == ord("r"):
             refine_enabled = not refine_enabled
             if refine_enabled and refiner is None:
-                refiner = OutputRefiner(project_root=project_root)
+                refiner = OutputRefiner(project_root=project_root, enable_esrgan=bool(esrgan))
+        if key == ord(" "):
+            paused = True
+        if key == ord("c"):
+            os.makedirs(os.path.join(project_root, "generated", "captures"), exist_ok=True)
+            out_path = os.path.join(project_root, "generated", "captures", f"capture_{screenshot_idx:04d}.png")
+            screenshot_idx += 1
+            cv2.imwrite(out_path, output)
+            print(f"Saved capture: {out_path}")
         if key in (ord("1"), ord("2"), ord("3")):
             preset_idx = int(chr(key)) - 1
             if 0 <= preset_idx < len(preset_keys):
@@ -506,9 +581,14 @@ if __name__ == "__main__":
     if not OPENGL_AVAILABLE:
         print("PyOpenGL/glfw not available: using software fallback renderer.")
     parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--triposr", default="require", choices=("off", "auto", "require"))
+    parser.add_argument("--triposr", default="auto", choices=("off", "auto", "require"))
     parser.add_argument("--no-refine", action="store_true")
+    parser.add_argument("--esrgan", action="store_true", help="Enable ESRGAN refinement (slow; optional).")
     parser.add_argument("--camera", type=int, default=0, help="Webcam index (default 0).")
     args = parser.parse_args()
-    run_virtual_tryon_3d(triposr_mode=args.triposr, refine=(not args.no_refine), camera_index=args.camera)
-
+    run_virtual_tryon_3d(
+        triposr_mode=args.triposr,
+        refine=(not args.no_refine),
+        esrgan=bool(args.esrgan),
+        camera_index=args.camera,
+    )

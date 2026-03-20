@@ -23,12 +23,17 @@ Quit with `Q` or `ESC`.
 
 Options:
 
-- `python main.py --triposr require` (default)
-- `python main.py --triposr auto` (use fallback if TripoSR fails)
+- `python main.py --triposr auto` (default; start fast, swap in OBJ when ready; fallback if TripoSR fails)
+- `python main.py --triposr require` (wait for OBJ before rendering; stop try-on if TripoSR fails)
 - `python main.py --triposr off` (skip TripoSR)
 - `python main.py --no-refine` (disable refinement)
+- `python main.py --esrgan` (slow; higher quality refine when available)
 
-In the preview window, press `r` to toggle refinement on/off.
+In the preview window:
+
+- `r`: toggle refinement
+- `space`: pause/resume (useful for analysis)
+- `c`: capture a screenshot to `generated/captures/`
 
 ## Run (offline image/video)
 

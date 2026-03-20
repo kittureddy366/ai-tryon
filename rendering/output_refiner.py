@@ -12,13 +12,14 @@ class OutputRefiner:
     - Falls back to fast local enhancement around torso ROI.
     """
 
-    def __init__(self, project_root):
+    def __init__(self, project_root, enable_esrgan=False):
         self.mode = "fast"
         self.upsampler = None
         self.frame_count = 0
         self._cached_roi = None
         self._cached_bounds = None
-        self._try_init_esrgan(project_root)
+        if bool(enable_esrgan):
+            self._try_init_esrgan(project_root)
 
     def _try_init_esrgan(self, project_root):
         esrgan_root = os.path.join(project_root, "Real-ESRGAN")
