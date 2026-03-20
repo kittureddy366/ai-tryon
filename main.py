@@ -7,7 +7,7 @@ import numpy as np
 
 from garment.garment_library import get_preset, list_preset_keys
 from garment.cloth_mesh import create_shirt_cloth_mesh
-from garment.obj_garment_loader import load_obj_garment_mesh
+from garment.obj_garment_loader import load_obj_garment_mesh, planar_uvs_from_vertices
 from garment.triposr_obj_generator import TripoSRObjGenerator, find_2d_garment_image
 from garment.zip_garment_loader import load_garment_zip_texture
 from physics_engine.mass_spring_cloth import MassSpringClothSimulator
@@ -233,6 +233,7 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
     anchor_state = {"anchors": None}
     paused = False
     screenshot_idx = 0
+    texture_enabled = True
 
     while True:
         # Low-latency capture: drop buffered frames when CPU can't keep up.
@@ -259,6 +260,11 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
             active_preset = preset
             mesh = load_obj_garment_mesh(triposr_state["obj_path"])
             if mesh is not None:
+                # TripoSR UVs are not guaranteed to align with the 2D garment image.
+                # Use a stable planar UV projection so the 2D texture maps sensibly.
+                planar_uvs = planar_uvs_from_vertices(mesh.get("vertices"))
+                if planar_uvs is not None:
+                    mesh["uvs"] = planar_uvs
                 cloth_mesh = mesh
                 cloth_sim = MassSpringClothSimulator(cloth_mesh, **preset["physics"])
                 tex_path = preset.get("texture_path", "")
@@ -406,8 +412,8 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
                     body_mesh.faces,
                     cloth_vertices,
                     cloth_mesh["faces"],
-                    cloth_uvs=cloth_mesh["uvs"],
-                    cloth_texture_rgba=cloth_texture,
+                    cloth_uvs=cloth_mesh.get("uvs"),
+                    cloth_texture_rgba=(cloth_texture if texture_enabled else None),
                     cloth_color_bgra=active_preset["cloth_color_bgra"],
                     pose_points=points,
                     anchor_targets=anchor_targets,
@@ -470,7 +476,7 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
             )
             cv2.putText(
                 output,
-                "Space: pause  C: capture  R: refine  S: skip TripoSR wait",
+                "Space: pause  C: capture  R: refine  T: texture  S: skip TripoSR wait",
                 (14, 156),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.42,
@@ -480,7 +486,11 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
             )
             cv2.putText(
                 output,
-                f"Refine: {'on' if refine_enabled else 'off'}{(' (' + refiner.mode + ')') if (refiner is not None and refine_enabled) else ''}",
+                (
+                    f"Refine: {'on' if refine_enabled else 'off'}"
+                    f"{(' (' + refiner.mode + ')') if (refiner is not None and refine_enabled) else ''}"
+                    f"  Texture: {'on' if texture_enabled else 'off'}"
+                ),
                 (14, 106),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.52,
@@ -548,6 +558,8 @@ def run_virtual_tryon_3d(*, triposr_mode="auto", refine=True, esrgan=False, came
             refine_enabled = not refine_enabled
             if refine_enabled and refiner is None:
                 refiner = OutputRefiner(project_root=project_root, enable_esrgan=bool(esrgan))
+        if key == ord("t"):
+            texture_enabled = not texture_enabled
         if key == ord(" "):
             paused = True
         if key == ord("c"):

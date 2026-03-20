@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from garment.cloth_mesh import create_shirt_cloth_mesh  # noqa: E402
 from garment.garment_library import get_preset, list_preset_keys  # noqa: E402
-from garment.obj_garment_loader import load_obj_garment_mesh  # noqa: E402
+from garment.obj_garment_loader import load_obj_garment_mesh, planar_uvs_from_vertices  # noqa: E402
 from garment.triposr_obj_generator import TripoSRObjGenerator, find_2d_garment_image  # noqa: E402
 from physics_engine.mass_spring_cloth import MassSpringClothSimulator  # noqa: E402
 from pose.body_mesh_generator import PreciseBodyMeshGenerator  # noqa: E402
@@ -314,6 +314,9 @@ def main():
             if snap.get("status") == "ready" and snap.get("obj_path"):
                 mesh = load_obj_garment_mesh(snap["obj_path"])
                 if mesh is not None:
+                    planar_uvs = planar_uvs_from_vertices(mesh.get("vertices"))
+                    if planar_uvs is not None:
+                        mesh["uvs"] = planar_uvs
                     cloth_mesh = mesh
                     cloth_sim = MassSpringClothSimulator(cloth_mesh, **preset["physics"])
                     print(f"TripoSR: using generated OBJ: {snap['obj_path']}")

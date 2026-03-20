@@ -127,7 +127,8 @@ def _normalize_uvs(uvs):
 
     # Many exported OBJ files store UVs in atlas/pixel-like coordinates.
     # Convert to [0, 1] robustly.
-    if u_span > 2.0 or v_span > 2.0:
+    out_of_unit = (u_min < -0.05) or (u_max > 1.05) or (v_min < -0.05) or (v_max > 1.05)
+    if u_span > 2.0 or v_span > 2.0 or out_of_unit:
         if u_span > 1e-6:
             u = (u - u_min) / u_span
         else:
@@ -137,12 +138,26 @@ def _normalize_uvs(uvs):
         else:
             v = np.full_like(v, 0.5)
     else:
-        u = u % 1.0
-        v = v % 1.0
+        # Keep UVs inside the texture without tiling/wrapping.
+        u = np.clip(u, 0.0, 1.0)
+        v = np.clip(v, 0.0, 1.0)
 
     out[:, 0] = np.clip(u, 0.0, 1.0)
     out[:, 1] = np.clip(v, 0.0, 1.0)
     return out
+
+
+def planar_uvs_from_vertices(vertices):
+    if vertices is None or vertices.size == 0:
+        return None
+    v = vertices.astype(np.float32)
+    x = v[:, 0]
+    y = v[:, 1]
+    min_x, max_x = float(np.min(x)), float(np.max(x))
+    min_y, max_y = float(np.min(y)), float(np.max(y))
+    u = (x - min_x) / max(max_x - min_x, 1e-6)
+    vv = (max_y - y) / max(max_y - min_y, 1e-6)
+    return np.column_stack([np.clip(u, 0.0, 1.0), np.clip(vv, 0.0, 1.0)]).astype(np.float32)
 
 
 def _simplify_mesh(vertices, faces, uvs, max_faces=2200):
