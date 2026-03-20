@@ -1,5 +1,6 @@
 import time
 import os
+import argparse
 
 import cv2
 import numpy as np
@@ -85,13 +86,17 @@ def _build_anchor_targets(body_mesh, points, anchor_state=None):
     return anchors
 
 
-def _create_garment_runtime(preset_key):
+def _create_garment_runtime(project_root, preset_key):
     preset = get_preset(preset_key)
     mesh = None
     obj_path = ""
     if isinstance(preset.get("generated_obj_path", ""), str):
         obj_path = preset.get("generated_obj_path", "")
+    if not obj_path and isinstance(preset.get("garment_obj_path", ""), str):
+        obj_path = preset.get("garment_obj_path", "")
     if obj_path:
+        if not os.path.isabs(obj_path):
+            obj_path = os.path.join(project_root, obj_path)
         mesh = load_obj_garment_mesh(obj_path)
     if mesh is None:
         mesh = create_shirt_cloth_mesh(rows=preset["mesh_rows"], cols=preset["mesh_cols"])
@@ -104,9 +109,14 @@ def _create_garment_runtime(preset_key):
     texture = None
     zip_path = preset.get("garment_zip_path", "")
     if zip_path:
+        if not os.path.isabs(zip_path):
+            zip_path = os.path.join(project_root, zip_path)
         texture = load_garment_zip_texture(zip_path)
     if texture is None:
-        texture = _prepare_garment_texture(preset.get("texture_path", ""))
+        tex_path = preset.get("texture_path", "")
+        if tex_path and (not os.path.isabs(tex_path)):
+            tex_path = os.path.join(project_root, tex_path)
+        texture = _prepare_garment_texture(tex_path)
     return preset, mesh, sim, texture
 
 
@@ -178,9 +188,9 @@ def _format_triposr_status(snapshot):
     return "TripoSR: idle", (180, 180, 180)
 
 
-def run_virtual_tryon_3d():
+def run_virtual_tryon_3d(*, triposr_mode="require", refine=True, camera_index=0):
     project_root = os.path.dirname(os.path.abspath(__file__))
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(int(camera_index))
     if not cap.isOpened():
         raise RuntimeError("Could not open webcam.")
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -195,13 +205,21 @@ def run_virtual_tryon_3d():
     current_key = preset_keys[preset_idx]
     initial_preset = get_preset(current_key)
     triposr_image = find_2d_garment_image(project_root, [initial_preset.get("texture_path", "")])
-    triposr_gen = TripoSRObjGenerator(project_root, triposr_image)
-    triposr_gen.start_async(force=False)
 
-    active_preset, cloth_mesh, cloth_sim, cloth_texture = _create_garment_runtime(current_key)
+    triposr_mode = (triposr_mode or "require").strip().lower()
+    if triposr_mode not in {"off", "auto", "require"}:
+        raise ValueError("triposr_mode must be one of: off, auto, require")
+
+    triposr_gen = None
+    if triposr_mode != "off":
+        triposr_gen = TripoSRObjGenerator(project_root, triposr_image)
+        triposr_gen.start_async(force=False)
+
+    active_preset, cloth_mesh, cloth_sim, cloth_texture = _create_garment_runtime(project_root, current_key)
     triposr_applied = False
     renderer = RealtimeMeshRenderer()
-    refiner = OutputRefiner(project_root=project_root)
+    refiner = OutputRefiner(project_root=project_root) if refine else None
+    refine_enabled = bool(refine)
     smoother_state = initialize_landmark_smoother()
 
     cloth_initialized = False
@@ -219,7 +237,7 @@ def run_virtual_tryon_3d():
         now = time.time()
         dt = max(1.0 / 120.0, now - last_t)
         last_t = now
-        triposr_state = triposr_gen.snapshot()
+        triposr_state = triposr_gen.snapshot() if triposr_gen is not None else {"status": "idle"}
 
         if triposr_state["status"] == "ready" and not triposr_applied:
             preset = get_preset(current_key).copy()
@@ -229,9 +247,63 @@ def run_virtual_tryon_3d():
             if mesh is not None:
                 cloth_mesh = mesh
                 cloth_sim = MassSpringClothSimulator(cloth_mesh, **preset["physics"])
-                cloth_texture = _prepare_garment_texture(preset.get("texture_path", ""))
+                tex_path = preset.get("texture_path", "")
+                if tex_path and (not os.path.isabs(tex_path)):
+                    tex_path = os.path.join(project_root, tex_path)
+                cloth_texture = _prepare_garment_texture(tex_path)
                 cloth_initialized = False
                 triposr_applied = True
+
+        if (triposr_mode == "require") and (triposr_gen is not None) and (not triposr_applied):
+            output = frame
+            triposr_text, triposr_color = _format_triposr_status(triposr_state)
+            cv2.putText(
+                output,
+                "Waiting for TripoSR garment mesh (required)",
+                (14, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.62,
+                (230, 230, 230),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                output,
+                triposr_text,
+                (14, 58),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                triposr_color,
+                2,
+                cv2.LINE_AA,
+            )
+            if triposr_state.get("status") == "failed":
+                err = (triposr_state.get("error") or "").replace("\n", " ").strip()
+                cv2.putText(
+                    output,
+                    ("TripoSR failed: " + err)[-110:],
+                    (14, 82),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    (0, 0, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    output,
+                    "Press Q/ESC to quit",
+                    (14, 106),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    (0, 0, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+            cv2.imshow("Real-time 3D Virtual Try-On", output)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q") or key == 27:
+                break
+            continue
 
         # Run pose every other frame for smoother overall realtime throughput.
         pose_stride = 3 if triposr_state["status"] == "running" else 2
@@ -313,7 +385,12 @@ def run_virtual_tryon_3d():
                     2,
                     cv2.LINE_AA,
                 )
-            if render_ok and (triposr_state["status"] != "running" or (frame_idx % 2 == 0)):
+            if (
+                render_ok
+                and refine_enabled
+                and (refiner is not None)
+                and (triposr_state["status"] != "running" or (frame_idx % 2 == 0))
+            ):
                 output = refiner.refine(output, points=points)
 
             cv2.putText(
@@ -348,7 +425,7 @@ def run_virtual_tryon_3d():
             )
             cv2.putText(
                 output,
-                f"Refine: {refiner.mode}",
+                f"Refine: {'on' if refine_enabled else 'off'}{(' (' + refiner.mode + ')') if (refiner is not None and refine_enabled) else ''}",
                 (14, 106),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.52,
@@ -400,16 +477,24 @@ def run_virtual_tryon_3d():
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q") or key == 27:
             break
+        if key == ord("r"):
+            refine_enabled = not refine_enabled
+            if refine_enabled and refiner is None:
+                refiner = OutputRefiner(project_root=project_root)
         if key in (ord("1"), ord("2"), ord("3")):
             preset_idx = int(chr(key)) - 1
             if 0 <= preset_idx < len(preset_keys):
                 current_key = preset_keys[preset_idx]
-                active_preset, cloth_mesh, cloth_sim, cloth_texture = _create_garment_runtime(current_key)
+                active_preset, cloth_mesh, cloth_sim, cloth_texture = _create_garment_runtime(project_root, current_key)
                 next_preset = get_preset(current_key)
                 triposr_image = find_2d_garment_image(project_root, [next_preset.get("texture_path", "")])
-                triposr_gen = TripoSRObjGenerator(project_root, triposr_image)
-                triposr_gen.start_async(force=False)
-                triposr_applied = False
+                if triposr_mode != "off":
+                    triposr_gen = TripoSRObjGenerator(project_root, triposr_image)
+                    triposr_gen.start_async(force=False)
+                    triposr_applied = False
+                else:
+                    triposr_gen = None
+                    triposr_applied = True
                 cloth_initialized = False
 
     renderer.close()
@@ -420,4 +505,10 @@ def run_virtual_tryon_3d():
 if __name__ == "__main__":
     if not OPENGL_AVAILABLE:
         print("PyOpenGL/glfw not available: using software fallback renderer.")
-    run_virtual_tryon_3d()
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--triposr", default="require", choices=("off", "auto", "require"))
+    parser.add_argument("--no-refine", action="store_true")
+    parser.add_argument("--camera", type=int, default=0, help="Webcam index (default 0).")
+    args = parser.parse_args()
+    run_virtual_tryon_3d(triposr_mode=args.triposr, refine=(not args.no_refine), camera_index=args.camera)
+

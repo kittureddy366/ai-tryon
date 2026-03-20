@@ -37,6 +37,7 @@ def find_2d_garment_image(project_root, preferred_paths=None):
 def find_local_triposr_model_dir(project_root):
     candidates = [
         os.environ.get("TRIPOSR_MODEL_PATH", ""),
+        os.path.join(project_root, ".cache", "triposr_hf", "stabilityai__TripoSR"),
         os.path.join(project_root, "TripoSR", "weights"),
         os.path.join(project_root, "TripoSR", "pretrained"),
         os.path.join(project_root, "TripoSR", "stabilityai", "TripoSR"),
